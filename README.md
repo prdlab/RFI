@@ -14,7 +14,7 @@ Generates plots:
 Additional code (line 548 & beyond) compares the pse as estimated by the staircase to pse estimated by fits to raw data as well as creates a plot with all participant time courses overlaid.
 
 ### RFI_timecourse_rawdata.csv 
-Created with data agg loop in RFI_percept.Rmd (lines 144 - 170). This dataset contains unedited output from experiment builder (all participants concatenated). If running RFI_percept.Rmd, import this data before line 173 and skip data agg loop.
+Created with data agg loop in RFI_percept.Rmd (lines 144 - 170). This dataset contains unedited output from experiment builder (all participants concatenated). 
 
 Column Descriptions:
 - TRIAL_TYPE:     practice or real (ie experimental)
