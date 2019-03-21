@@ -1,0 +1,742 @@
+---
+title: 'RFI time course: dim rod task'
+author: "Jeff Peterson"
+date: "March 15, 2019"
+output: html_document
+---
+
+
+```{r Global Options, message=FALSE, warning=FALSE}
+rm(list=ls())
+
+library(tidyverse); library(ggthemes)
+```
+
+
+```{r define functions}
+# Improved functions. Still testing, though appear to work well
+
+# Functions determine appropriate fit based on number of parameters supplied
+
+psy_fun <- function(x_val, rsp, par, lapse = FALSE, invert = FALSE){
+  
+  # Input args: x_val: stimulus levels
+  #             rsp: vector of participant's responses 
+  #             par: initial parameters ex. c(1,1) or c(1,1,1)
+  #                   !!! order is important !!! 
+  #                 if two par: c(pse, slope)
+  #                 if three par: c(pse, slope, height OR lapse)
+  #  
+  #             lapse: should functin fit lapse rate? TRUE or FALSE. Defaults to FALSE
+  #             invert: should function be inverted (i.e. start at 1 on left and fall to 0 on right)
+  #                 TRUE or FALSE. Defaults to FALSE
+  #
+  # If three parameters are supplied and lapse = FALSE, allows height of function to converge
+  # at values other than one.
+  
+  
+  # Output: sum of the squared differences between the observed effect (rsp) and 
+  #         that predicted by the psychometric function with current parameter values 
+  
+  
+  # This function is intended to be sent through optim() to perform minimization of
+  # the output - that is, to determine which parameters minimize the error between
+  # expected and observed values.
+  
+  
+  # Default behavior, values nullify effect of lapse rate, inversion, and scaling
+  inver_ctrla <- 0
+  inver_ctrlb <- -1
+  lapse_ctrl <- 0
+  height_ctrl <- 1
+  
+  if(invert == TRUE){
+    inver_ctrla <- 1
+    inver_ctrlb <- 1
+  }
+  
+  if(length(par) == 3 & lapse == FALSE) {height_ctrl <- par[3]}
+  if(length(par) == 3 & lapse == TRUE) {lapse_ctrl <- par[3]}
+  
+  # psychometric function
+  rhat <- (inver_ctrla - (inver_ctrlb * ((exp((x_val - par[1]) / par[2])) / 
+                                           
+                                           (1 + exp( (x_val - par[1]) / par[2]) )))) * 
+    
+    height_ctrl * (1 - 2 * lapse_ctrl) + lapse_ctrl 
+  
+  
+  sum((rsp - rhat)^2) # value to be minimized
+  
+}
+
+
+psy_plot <- function(x_val, par, lapse = FALSE, invert = FALSE) {
+  
+  # This function is intended to make plotting smooth psychometric functions easier
+  # Input args: x_val: range of x values at which to plot (i.e. stimulus levels)
+  #             par: parameters of function
+  #                   !!! order is important !!! 
+  #                 if two par: c(pse, slope)
+  #                 if three par: c(pse, slope, height OR lapse)
+  #             lapse: whether third parameter is height or lapse rate. TRUE or FALSE. Default = FALSE
+  #             invert: is function inverted? (i.e. start at 1 on left, fall to 0 on right)
+  #                 TRUE or FALSE. Defaults to FALSE
+  #
+  # Output: tibble with columns for x and y values of specified function.
+  #         Can be easily used by plot() or ggplot(
+  
+  
+  # Default behavior, values nullify effect of lapse rate, inversion, and scaling
+  inver_ctrla <- 0
+  inver_ctrlb <- -1
+  lapse_ctrl <- 0
+  height_ctrl <- 1
+  
+  if(invert == TRUE){
+    inver_ctrla <- 1
+    inver_ctrlb <- 1
+  }
+  
+  if(length(par) == 3 & lapse == FALSE) {height_ctrl <- par[3]}
+  if(length(par) == 3 & lapse == TRUE) {lapse_ctrl <- par[3]}
+  
+  # predicted value at given stimulus level & supplied parameters
+  y_val <- (inver_ctrla - (inver_ctrlb * ((exp((x_val - par[1]) / par[2])) / 
+                                            
+                                            (1 + exp( (x_val - par[1]) / par[2]) )))) *
+    
+    height_ctrl * (1 - 2 * lapse_ctrl) + lapse_ctrl 
+  
+  return(tibble(x_val, y_val))  
+  
+}
+
+
+find_thresh <- function(thresh, par){
+  
+  # !! NOT updated to accomodate inverted functions or functions with lapse rate !! 
+  # Function for finding the x value at which a given function crosses an
+  # arbitrary threshold (e.g. 10%). Rearranges psychometric function 
+  # to solve for x_val.
+  #
+  # Input args: thresh: desired threshold 
+  #             par: parameters of function
+  #                   !!! order is important !!! 
+  #                 if two par: c(pse, slope)
+  #                 if three par: c(pse, slope, height)
+  #
+  # Output: the x value at which the function crosses the given threshold 
+  
+  if(length(par) == 2){ par[3] <- 1 }
+  
+  thresh2 <- thresh * par[3]
+  thresh_val <- log(thresh2 / (par[3] - thresh2)) * par[2] + par[1]
+  
+  return(thresh_val)
+  
+}
+
+
+psy_funX <- function(x_val, rsp_bright, rsp_dim, par) {
+  
+  # Specifically designed for dim rod task. Fit functions to bright and dim rod time course
+  # simultaneously while ensuring the "height" parameter is the same for each. We would not expect
+  # larger RFI magnitude for bright vs dim rod, just change in time course
+  
+  rhat1 <- (exp((x_val - par[1]) / par[2])) / (1 + exp((x_val - par[1]) / par[2])) * par[5]
+  rhat2 <- (exp((x_val - par[3]) / par[4])) / (1 + exp((x_val - par[3]) / par[4])) * par[5]
+  
+  sum((rsp_bright - rhat1)^2) + sum((rsp_dim - rhat2)^2)
+  
+  
+}
+
+
+psy_plotX <- function(x_val, pse1, pse2, slope1, slope2, height) {
+  
+  y_val1 <- (exp((x_val - pse1) / slope1)) / 
+    (1 + exp((x_val - pse1) / slope1)) * height 
+  
+  y_val2 <- (exp((x_val - pse2) / slope2)) / 
+    (1 + exp((x_val - pse2) / slope2)) * height 
+  
+  return(tibble(x_val, y_val1, y_val2))
+  
+  
+}
+
+```
+
+
+```{r data agg loop}
+
+data_directory <- "../Data/Dimrod" # specify location of data
+
+files <- list.files(data_directory)
+
+data_raw <- NULL # create place for imported data to go
+
+for(i in 1:length(files)){
+  
+  # list files w/i subject folder
+  subfiles <- list.files(paste0(data_directory, "/", files[i]))
+  
+  # which file in list contains "RESULTS" in its name?
+  resultsFile <- subfiles[which(str_detect(subfiles, "RESULTS") == TRUE)]
+  
+  # load results file
+  data_raw <- rio::import(paste0(data_directory, "/", files[i], "/", resultsFile),
+                          na.strings = c("NULL")) %>%
+    
+    mutate(sid = files[i]) %>%  # add participant ID column
+    
+    rbind(data_raw)             # aggregate data
+  
+}
+
+```
+
+```{r import data}
+
+# Data set not complete
+# data_raw <- rio::import("./RFI_dimrod_rawdata.csv")
+
+```
+
+```{r housekeeping}
+
+data_clean <- data_raw %>%  
+  janitor::clean_names() %>%
+  filter(trial_type == "real") %>% 
+  select(sid, everything()) %>% 
+  arrange(sid) %>%
+  
+  mutate(
+    probe_del_ms = round(probe_del * (16 + 2/3), 0),
+    
+    rod_lum = ifelse(rod_rgb == "(92, 0, 0)", "Dim", "Bright"),
+    
+    frame_orient = ifelse(frame_tilt == "-15", "Left", "Right"),
+    
+    stair_approach = ifelse(substr(trial_variant,2,2) == "L", "Left", "Right")
+    
+    
+  )
+
+sids <- unique(data_clean$sid)
+
+```
+
+```{r}
+
+data_pse <- data_clean %>%
+  
+  filter(reversal_num > 6,
+         reversal == 1) %>%
+  
+  group_by(sid, frame_orient, probe_del_ms, rod_lum) %>% 
+  summarise(pse = mean(rod_tilt))
+
+```
+
+```{r raw fits}
+
+# Fit to left/right responses (i.e., 0/1)
+
+x_plotlims2 <- -30:30
+
+raw_fits <- data_clean %>% 
+  group_by(sid, frame_orient, probe_del_ms, rod_lum) %>%
+  nest() %>% 
+  mutate(full_solution = map(data, ~optim(par = c(1, 1), 
+                                          psy_fun, 
+                                          x_val = .$rod_tilt,
+                                          rsp = .$response)),
+         
+         # Pull out relevant parameters from full solution
+         pse = map_dbl(full_solution, ~.$par[1]),
+         
+         slope = map_dbl(full_solution, ~.$par[2]),
+         
+         residual = map_dbl(full_solution, "value"),
+         
+         converge = map_dbl(full_solution, ~.$convergence),
+         
+         curve_fit = map(full_solution, ~psy_plot(x_val = x_plotlims2,
+                                                  c(.$par[1], .$par[2])))
+  )
+```
+
+
+```{r indv time course fits}
+
+x_plotlims <- -400:400
+
+SOAs <- sort(unique(data_pse$probe_del_ms))
+
+data_rfeX <- data_pse %>%
+  unite(frame_col, "frame_orient", "rod_lum") %>% 
+  spread(frame_col, pse) %>% 
+  mutate(rfe_bright = Right_Bright - Left_Bright,
+         rfe_dim = Right_Dim - Left_Dim) %>%
+  select(sid, probe_del_ms, rfe_bright, rfe_dim) %>% 
+  group_by(sid) %>%
+  nest() %>% 
+  
+  # Fit psychometric function at each SOA for each participant
+  mutate(psy_fit = map(data, ~optim(par = c(-100, 50, -100, 50, 6),
+                                    psy_funX,
+                                    x_val = .$probe_del_ms,
+                                    rsp_bright = .$rfe_bright,
+                                    rsp_dim = .$rfe_dim)),
+         
+         # Pull out relevant parameters from full solution
+         pse_bright = map_dbl(psy_fit, ~.$par[1]),
+         
+         slope_bright = map_dbl(psy_fit, ~.$par[2]),
+         
+         pse_dim = map_dbl(psy_fit, ~.$par[3]),
+         
+         slope_dim = map_dbl(psy_fit, ~.$par[4]),
+         
+         height = map_dbl(psy_fit, ~.$par[5]),
+         
+         residual = map_dbl(psy_fit, "value"),
+         
+         converge = map_dbl(psy_fit, ~.$convergence),
+         
+         # Create data for plotting smooth function
+         curve_fit = map(psy_fit, ~psy_plotX(x_val = x_plotlims,
+                                             pse1 = .$par[1],
+                                             slope1 = .$par[2],
+                                             
+                                             pse2  = .$par[3],
+                                             slope2 = .$par[4],
+                                             height = .$par[5])),
+         
+         predicted_y = map(psy_fit, ~psy_plotX(x_val = SOAs,
+                                               pse1 = .$par[1],
+                                               slope1 = .$par[2],
+                                               
+                                               pse2  = .$par[3],
+                                               slope2 = .$par[4],
+                                               height = .$par[5]))
+         
+  )
+
+
+
+```
+
+```{r prediction error}
+# Join observed and predicted errors into one data set
+data_error0 <- data_rfeX %>% 
+  select(sid, data) %>% 
+  unnest() %>% 
+  gather(key = rfe_type, value = observed, 3:4)
+
+data_error <- data_rfeX %>% 
+  select(sid, predicted_y) %>% 
+  unnest() %>% 
+  gather(key = rfe_type, value = predicted, 3:4) %>% 
+  mutate(rfe_type = ifelse(rfe_type == "y_val1", "rfe_bright", "rfe_dim")) %>% 
+  right_join(data_error0, by = c("sid", "rfe_type", "x_val" = "probe_del_ms") ) %>% 
+  mutate(pred_error = predicted - observed)
+
+# define function to grab p value from cor.test
+r_sq <- function(observed, predicted){
+  cor.obj <- cor.test(x = observed, y = predicted)
+  p_val <- cor.obj$p.val
+  return(p_val)
+}
+
+# get r^2 and p value for each fit
+data_rsq <- data_error %>% 
+  group_by(sid, rfe_type) %>% 
+  summarize(p_val = r_sq(observed, predicted),
+            rsq = cor(observed, predicted)^2)
+
+# which subjects had a fit with a p value greater than 0.1?
+sid_rm <- unique(data_rsq$sid[which(data_rsq$p_val > 0.1)])
+
+if(length(sid_rm) == 0){sid_rm <- "None"}
+
+print(paste("Subjects Removed:", sid_rm))
+
+```
+
+
+```{r}
+rfe_clean <- data_rfeX[-which(data_pse$sid == sid_rm),] 
+
+t.test(rfe_clean$pse_bright, rfe_clean$pse_dim)
+t.test(rfe_clean$slope_bright, rfe_clean$slope_dim)
+
+```
+
+
+
+```{r RFE group fit free}
+
+# group fit with heights free to vary
+
+RFE_group_fit0 <- rfe_clean %>%
+  select(sid, data) %>%
+  unnest() %>%
+  gather(key = rfe_type, value = rfe, 3:4) %>% 
+  group_by(probe_del_ms, rfe_type) %>%
+  summarize(mean_rfe = mean(rfe)) %>%
+  group_by(rfe_type) %>% 
+  nest() %>%
+  
+  mutate(full_solution = map(data, ~optim(par = c(-100, 50, 6),
+                                          psy_fun,
+                                          x_val = .$probe_del_ms,
+                                          rsp = .$mean_rfe)),
+         
+         # Pull out relevant parameters from full solution
+         pse = map_dbl(full_solution, ~.$par[1]),
+         
+         slope = map_dbl(full_solution, ~.$par[2]),
+         
+         height = map_dbl(full_solution, ~.$par[3]),
+         
+         residual = map_dbl(full_solution, "value"),
+         
+         curve_fit = map(full_solution, ~psy_plot(x_val = x_plotlims,
+                                                  c(.$par[1], .$par[2], .$par[3])))
+         
+  )
+```
+
+```{r RFE group fit}
+
+# bright and dim group fits with height set to be the same... not sure if this makes as much sense
+
+RFE_group_fit <- rfe_clean %>%
+  select(sid, data) %>%
+  unnest() %>% 
+  group_by(probe_del_ms) %>% 
+  summarize(mean_bright = mean(rfe_bright),
+            mean_dim = mean(rfe_dim)) %>% 
+  mutate(columnID = 1) %>% 
+  group_by(columnID) %>% 
+  nest() %>% 
+  
+  # Fit psychometric function at each SOA for each participant
+  mutate(psy_fit = map(data, ~optim(par = c(-100, 50, -100, 50, 6),
+                                    psy_funX,
+                                    x_val = .$probe_del_ms,
+                                    rsp_bright = .$mean_bright,
+                                    rsp_dim = .$mean_dim)),
+         
+         # Pull out relevant parameters from full solution
+         pse_bright = map_dbl(psy_fit, ~.$par[1]),
+         
+         slope_bright = map_dbl(psy_fit, ~.$par[2]),
+         
+         pse_dim = map_dbl(psy_fit, ~.$par[3]),
+         
+         slope_dim = map_dbl(psy_fit, ~.$par[4]),
+         
+         height = map_dbl(psy_fit, ~.$par[5]),
+         
+         residual = map_dbl(psy_fit, "value"),
+         
+         converge = map_dbl(psy_fit, ~.$convergence),
+         
+         # Create data for plotting smooth function
+         curve_fit = map(psy_fit, ~psy_plotX(x_val = x_plotlims,
+                                             pse1 = .$par[1],
+                                             slope1 = .$par[2],
+                                             
+                                             pse2  = .$par[3],
+                                             slope2 = .$par[4],
+                                             height = .$par[5])),
+         
+         predicted_y = map(psy_fit, ~psy_plotX(x_val = SOAs,
+                                               pse1 = .$par[1],
+                                               slope1 = .$par[2],
+                                               
+                                               pse2  = .$par[3],
+                                               slope2 = .$par[4],
+                                               height = .$par[5]))
+         
+  )
+
+
+```
+
+
+
+
+
+Plots
+
+```{r, Graphics Tuner}
+
+line_size = 2.3
+leftFrame_col = "royalblue"
+rightFrame_col = "firebrick2"
+upFrame_col = "grey24"
+text_size = 22 
+colour <- c("royalblue", "firebrick2")
+
+```
+
+
+```{r PSE plot}
+
+plot_LR_frames <- data_pse[-which(data_pse$sid == sid_rm),] %>% 
+  group_by(frame_orient, probe_del_ms, rod_lum) %>%
+  summarize(mean_pse = mean(pse),
+            se_pse = sd(pse) / sqrt(length(files))) %>% 
+  
+  
+  ggplot(aes(probe_del_ms, mean_pse, color = frame_orient)) +
+  geom_vline(xintercept = 0, col = "grey29", linetype = 3, size = line_size) +
+  geom_line(aes(linetype = rod_lum), size = line_size) +
+  geom_errorbar(aes(ymin = mean_pse - se_pse, ymax = mean_pse + se_pse),
+                width = 1.4, size = 1.4, 
+                position = "dodge") + 
+  
+  geom_point(shape = 21, size = 6, fill = "white") +
+  
+  #scale_y_continuous(breaks = seq(-4, 3, by = 1)) +
+  ylab(expression(paste("PSE (",degree,")"))) +
+  #xlab("\n Probe Lead                                      Probe Lag \n SOA (msec)") +
+  
+  theme_bw() +
+  
+  theme(axis.title = element_text(size = text_size))  +
+  theme(axis.title.x = element_blank()) +
+  theme(axis.text = element_text(size = text_size)) +
+  #theme(legend.position = "none") +
+  scale_colour_manual(values=colour) 
+
+plot_LR_frames 
+
+# Copy into console for saving image
+# jpeg("lr_frames.jpg", quality = 100,
+#      width = 9.2, height = 6.4, units = 'in', res = 300)
+# plot_LR_frames # Make plot
+# dev.off()
+```
+
+```{r RFE plot}
+rfe_pts <- data_rfeX[-which(data_pse$sid == sid_rm),] %>%
+  select(sid, data) %>% 
+  unnest() %>% 
+  gather(rfe_type, rfe, 3:4) %>% 
+  group_by(rfe_type, probe_del_ms) %>%
+  summarize(mean_rfe = mean(rfe),
+            se_rfe = sd(rfe) / sqrt(length(files)))
+
+
+plot_RFE <- RFE_group_fit %>%
+  select(curve_fit) %>% 
+  unnest() %>% 
+  gather(rfe_type, fit, 2:3) %>% 
+  mutate(rfe_type = ifelse(rfe_type == "y_val1", "Bright Rod", "Dim Rod")) %>% 
+  
+  ggplot(aes(x = x_val, y = fit)) +
+  geom_vline(xintercept = 0, col = "grey29", linetype = 3, size = line_size) +
+  geom_line(aes(linetype = rfe_type), 
+            size = line_size,
+            color = "firebrick2") +
+  geom_errorbar(data = rfe_pts, 
+                aes(x = probe_del_ms, y = mean_rfe, 
+                    ymin = mean_rfe - se_rfe, ymax = mean_rfe + se_rfe),
+                width = 1, size = 1.2, 
+                position = "dodge") + 
+  
+  geom_point(data = rfe_pts,
+             aes(x = probe_del_ms, y = mean_rfe, shape = rfe_type),
+             size = 3, fill = "white") +
+  
+  # scale_y_continuous(breaks = seq(-4, 3, by = 1)) +
+  ylab(expression(paste("PSE (",degree,")"))) +
+  xlab("\n Probe Lead                                      Probe Lag \n SOA (msec)") +
+  
+  theme_bw() +
+  geom_segment(x = RFE_group_fit$pse_bright, y = 0,
+               xend = RFE_group_fit$pse_bright, yend = RFE_group_fit$height/2) +
+  geom_segment(x = RFE_group_fit$pse_dim, y = 0,
+               xend = RFE_group_fit$pse_dim, yend = RFE_group_fit$height/2,
+               linetype = "dashed") +
+  geom_text(x = 250, y =1,
+    label = paste("Time course shift: \n", 
+                          round(RFE_group_fit$pse_bright - RFE_group_fit$pse_dim, 1), "ms")) +
+  theme(axis.title = element_text(size = text_size))  +
+  theme(axis.text = element_text(size = text_size)) +
+  scale_colour_manual(values=colour) 
+
+
+plot_RFE
+
+```
+
+
+
+```{r indv plot loop, echo=FALSE, fig.show='hold', fig.align='center'}
+
+
+for(i in 1:length(sids)){
+  
+  sbj_plt_name <- sids[i]
+  if(sids[i] %in% sid_rm == TRUE){
+    sbj_plt_name <- paste("REMOVED", sids[i]) # note whether subject was bad
+  }
+  
+  # Staircases
+  plt1a <- data_clean %>%
+    filter(sid == sids[i],
+           rod_lum == "Dim") %>%
+    
+    ggplot(aes(x = trial_iteration_val, y = rod_tilt)) +
+    geom_line(aes(color = stair_approach), size = 1.3) +
+    facet_grid(probe_del_ms ~ frame_orient) +
+    ggtitle(paste0(sbj_plt_name, ": Dim Rod"))
+  
+  plt1b <- data_clean %>%
+    filter(sid == sids[i],
+           rod_lum == "Bright") %>%
+    
+    ggplot(aes(x = trial_iteration_val, y = rod_tilt)) +
+    geom_line(aes(color = stair_approach), size = 1.3) +
+    facet_grid(probe_del_ms ~ frame_orient) +
+    ggtitle(paste0(sbj_plt_name, ": Bright Rod"))
+  
+  # Raw fits
+  indv_pts <- raw_fits %>%
+    filter(sid == sids[i]) %>% 
+    select(frame_orient, probe_del_ms, rod_lum, data) %>% 
+    unnest() %>%
+    select(frame_orient, probe_del_ms, rod_lum, rod_tilt, response) %>% 
+    group_by(frame_orient, probe_del_ms, rod_tilt, rod_lum) %>% 
+    summarize(m_resp = mean(response),
+              n = n())
+  
+  # Dim Rod
+  plt2a <- raw_fits %>% 
+    filter(sid == sids[i],
+           rod_lum == "Dim") %>% 
+    select(frame_orient, probe_del_ms, curve_fit) %>% 
+    unnest() %>% 
+    
+    ggplot(aes(x = x_val, y = y_val)) + 
+    geom_line() +
+    geom_point(data = indv_pts[which(indv_pts$rod_lum == "Dim"),], 
+               aes(x = rod_tilt, y = m_resp, size = n),
+               color = rightFrame_col, alpha = .6) +
+    facet_grid(probe_del_ms ~ frame_orient) +
+    
+    xlab("Rod Tilt") +
+    ylab("Proportion Respond Rightward") +
+    
+    ggtitle(paste0(sbj_plt_name, ": Dim Rod"))
+  
+  # Bright Rod
+  plt2b <- raw_fits %>% 
+    filter(sid == sids[i],
+           rod_lum == "Bright") %>% 
+    select(frame_orient, probe_del_ms, curve_fit) %>%
+    
+    unnest() %>% 
+    
+    ggplot(aes(x = x_val, y = y_val)) + 
+    geom_line() +
+    geom_point(data = indv_pts[which(indv_pts$rod_lum == "Bright"),], 
+               aes(x = rod_tilt, y = m_resp, size = n),
+               color = rightFrame_col, alpha = .6) +
+    facet_grid(probe_del_ms ~ frame_orient) +
+    
+    xlab("Rod Tilt") +
+    ylab("Proportion Respond Rightward") +
+    
+    ggtitle(paste0(sbj_plt_name, ": Bright Rod"))
+  
+  # Time course fit
+  
+  indv_rfe <- data_rfeX %>%
+    filter(sid == sids[i]) %>% 
+    select(sid, data) %>% 
+    unnest() %>%
+    gather(key = rfe_type, value = rfe, 3:4) %>% 
+    mutate(rfe_type = ifelse(rfe_type == "rfe_bright", "Bright Rod", "Dim Rod"))
+  
+  
+  
+  pltX <- data_rfeX %>% 
+    filter(sid == sids[i]) %>% 
+    select(sid, curve_fit) %>%
+    unnest() %>%
+    gather(key = rfe_type, value = y_val, 3:4) %>% 
+    mutate(rfe_type = ifelse(rfe_type == "y_val1", "Bright Rod", "Dim Rod")) %>% 
+    
+    
+    ggplot(aes(x = x_val, y = y_val)) +
+    geom_vline(xintercept = 0, linetype = "dashed", size = 1) +
+    geom_line(col = "firebrick2", size = line_size) +
+    geom_point(data = indv_rfe, 
+               aes(x = probe_del_ms, y = rfe),
+               size = 3, fill = "white") +
+    
+    
+    xlab("Probe - Frame SOA") +
+    ylab(expression(paste("RFI Magnitude (",degree,")"))) +
+    # annotation_custom(ggplotGrob(indv_error), 
+    #                   xmin = 0, xmax = 400, ymin = 0, ymax = .5) +
+    facet_wrap(~rfe_type) + 
+    
+    
+    theme_bw() +
+    
+    ggtitle(paste0(sbj_plt_name, ": RFI timecourse"))
+  
+  
+  # Error plot
+  indv_rsq <- data_rsq %>% 
+    filter(sid == sids[i]) %>% 
+    mutate(rfe_type = ifelse(rfe_type == "rfe_bright", "Bright Rod", "Dim Rod"))
+  
+  indv_error <- data_error %>% 
+    filter(sid == sids[i]) %>%
+    mutate(rfe_type = ifelse(rfe_type == "rfe_bright", "Bright Rod", "Dim Rod")) %>% 
+    
+    ggplot(aes(x = observed, y = predicted)) +
+    geom_abline(slope = 1, intercept = 0, size = 1, color = "firebrick2") +
+    geom_point(size = 2) +
+    geom_smooth(method='lm',formula=y~x) +
+    # theme(axis.text = element_blank()) +
+    facet_wrap(.~rfe_type) +
+    ggtitle(paste0(sbj_plt_name, ": Prediction Error")) +
+    # labs(subtitle = "Red line is unity") +
+    
+    geom_text(data = indv_rsq,
+              mapping = aes(x = -Inf, y = Inf, label = paste("p =", round(p_val, 3))),
+              hjust   = -.5,
+              vjust   = 1.3) +
+    geom_text(data = indv_rsq,
+              mapping = aes(x = -Inf, y = Inf, label = paste("r^2 =", round(rsq, 3))),
+              hjust   = -.4,
+              vjust   = 2.6)
+  
+  
+  
+  
+  print(plt1a)
+  print(plt2a)
+  
+  print(plt1b)
+  print(plt2b)
+  
+  print(pltX)
+  print(indv_error)
+}
+
+```
+
+
+
