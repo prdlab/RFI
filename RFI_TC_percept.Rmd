@@ -1,0 +1,656 @@
+---
+title: 'RFI time course: perception task'
+author: "Jeff Peterson"
+date: "March 14, 2019"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+  word_document: default
+---
+
+```{r Global Options, message=FALSE, warning=FALSE}
+rm(list=ls())
+
+library(tidyverse); library(ggthemes)
+```
+
+
+```{r define functions}
+# Improved functions. Still testing, though appear to work well
+
+# Functions determine appropriate fit based on number of parameters supplied
+
+psy_fun <- function(x_val, rsp, par, lapse = FALSE, invert = FALSE){
+  
+  # Input args: x_val: stimulus levels
+  #             rsp: vector of participant's responses 
+  #             par: initial parameters ex. c(1,1) or c(1,1,1)
+  #                   !!! order is important !!! 
+  #                 if two par: c(pse, slope)
+  #                 if three par: c(pse, slope, height OR lapse)
+  #  
+  #             lapse: should functin fit lapse rate? TRUE or FALSE. Defaults to FALSE
+  #             invert: should function be inverted (i.e. start at 1 on left and fall to 0 on right)
+  #                 TRUE or FALSE. Defaults to FALSE
+  #
+  # If three parameters are supplied and lapse = FALSE, allows height of function to converge
+  # at values other than one.
+  
+  
+  # Output: sum of the squared differences between the observed effect (rsp) and 
+  #         that predicted by the psychometric function with current parameter values 
+  
+  
+  # This function is intended to be sent through optim() to perform minimization of
+  # the output - that is, to determine which parameters minimize the error between
+  # expected and observed values.
+  
+  
+  # Default behavior, values nullify effect of lapse rate, inversion, and scaling
+  inver_ctrla <- 0
+  inver_ctrlb <- -1
+  lapse_ctrl <- 0
+  height_ctrl <- 1
+  
+  if(invert == TRUE){
+    inver_ctrla <- 1
+    inver_ctrlb <- 1
+  }
+  
+  if(length(par) == 3 & lapse == FALSE) {height_ctrl <- par[3]}
+  if(length(par) == 3 & lapse == TRUE) {lapse_ctrl <- par[3]}
+  
+  # psychometric function
+  rhat <- (inver_ctrla - (inver_ctrlb * ((exp((x_val - par[1]) / par[2])) / 
+                                           
+                                           (1 + exp( (x_val - par[1]) / par[2]) )))) * 
+    
+    height_ctrl * (1 - 2 * lapse_ctrl) + lapse_ctrl 
+  
+  
+  sum((rsp - rhat)^2) # value to be minimized
+  
+}
+
+
+psy_plot <- function(x_val, par, lapse = FALSE, invert = FALSE) {
+  
+  # This function is intended to make plotting smooth psychometric functions easier
+  # Input args: x_val: range of x values at which to plot (stimulus levels)
+  #             par: parameters of function
+  #                   !!! order is important !!! 
+  #                 if two par: c(pse, slope)
+  #                 if three par: c(pse, slope, height OR lapse)
+  #             lapse: whether third parameter is height or lapse rate. TRUE or FALSE. Default = FALSE
+  #             invert: is function inverted? (i.e. start at 1 on left and fall to 0 on right)
+  #                 TRUE or FALSE. Defaults to FALSE
+  #
+  # Output: tibble with columns for x and y values of specified function.
+  #         Can be easily used by plot() or ggplot(
+  
+  
+  # Default behavior, values nullify effect of lapse rate, inversion, and scaling
+  inver_ctrla <- 0
+  inver_ctrlb <- -1
+  lapse_ctrl <- 0
+  height_ctrl <- 1
+  
+  if(invert == TRUE){
+    inver_ctrla <- 1
+    inver_ctrlb <- 1
+  }
+  
+  if(length(par) == 3 & lapse == FALSE) {height_ctrl <- par[3]}
+  if(length(par) == 3 & lapse == TRUE) {lapse_ctrl <- par[3]}
+  
+  # predicted value at given stimulus level & supplied parameters
+  y_val <- (inver_ctrla - (inver_ctrlb * ((exp((x_val - par[1]) / par[2])) / 
+                                            
+                                            (1 + exp( (x_val - par[1]) / par[2]) )))) *
+    
+    height_ctrl * (1 - 2 * lapse_ctrl) + lapse_ctrl 
+  
+  return(tibble(x_val, y_val))  
+  
+}
+
+
+find_thresh <- function(thresh, par){
+  
+  # !! NOT updated to accomodate inverted functions or functions with lapse rate !! 
+  # Function for finding the x value at which a given function crosses an
+  # arbitrary threshold (e.g. 10%). Rearranges psychometric function 
+  # to solve for x_val.
+  #
+  # Input args: thresh: desired threshold 
+  #             par: parameters of function
+  #                   !!! order is important !!! 
+  #                 if two par: c(pse, slope)
+  #                 if three par: c(pse, slope, height OR lapse)
+  #
+  # Output: the x value at which the function crosses the given threshold 
+  
+  if(length(par) == 2){ par[3] <- 1 }
+  
+  thresh2 <- thresh * par[3]
+  thresh_val <- log(thresh2 / (par[3] - thresh2)) * par[2] + par[1]
+  
+  return(thresh_val)
+  
+}
+```
+
+
+```{r data agg loop}
+
+# data_directory <- "./Data/Perception_task/Good" # specify location of data
+# 
+# files <- list.files(data_directory) 
+# 
+# data_raw <- NULL # create place for data to go
+# 
+# for(i in 1:length(files)){
+#   
+#   # list files w/i subject folder
+#   subfiles <- list.files(paste0(data_directory, "/", files[i])) 
+#   
+#   # which file in list contains "RESULTS" in its name?
+#   resultsFile <- subfiles[which(str_detect(subfiles, "RESULTS") == TRUE)] 
+#   
+#   # load results file
+#   data_raw <- import(paste0(data_directory, "/", files[i], "/", resultsFile),
+#                      na.strings = c("NULL")) %>% 
+#     
+#     mutate(sid = files[i]) %>%  # add participant ID column
+#     
+#     rbind(data_raw)             # aggregate data
+#   
+# }
+
+```
+
+```{r import data}
+data_raw <- rio::import("./RFI_timecourse_rawdata.csv")
+```
+
+
+```{r housekeeping}
+
+data_clean <- data_raw %>%
+  
+  janitor::clean_names() %>%        # make colnames lowercase
+  filter(trial_type == "real") %>%  # filter out practice trials
+  select(sid, everything()) %>%     # make sid the first column
+  arrange(sid) %>%                  # sort rows by sid
+  
+  mutate( # add useful columns
+    
+    # convert frames to milliseconds
+    probe_del_ms = round(probe_del * (16 + 2/3), 0), 
+    
+    # recode frame tilt value
+    frame_orient = ifelse(frame_tilt == "-15", "Left", "Right"),
+    
+    # recode staircase approach
+    stair_approach = ifelse(substr(trial_variant,2,2) == "L", "Left", "Right")
+    
+  )
+
+sids <- unique(data_clean$sid) # list of subject IDs
+
+```    
+
+
+First determine the PSE (point of subjective equality) at each SOA. This will tell us the orientation at which the participant would be equally likely to report the rod as being tilted to the left or right of vertical. Next, determine the magnitude of the rod-and-frame effect (RFE; also referred to as rod-and-frame illusion or RFI). For each participant at each SOA, the RFE is determined by subracting the PSE in the left-tilted frame condition from the PSE in the right-tilted frame condition.   
+
+It is predicted that the RFE will become progressively larger as the SOA between the rod and frame decreases. The rationale being that the percieved orientation of the rod will be more influenced by the tilted frame (as reflected by changes in the PSE) when the rod and frame are presented in closer temporal proximity. Furthermore, it is predicted that the RFE will reach a plateau when the rod and frame are presented simultaneously (i.e., SOA = 0) and remain at this maximum for rods presented after frame onset (e.g., SOA = +200). 
+
+
+
+```{r fit to raw data}
+
+# Fit 2 parameter function to participant responses (0 or 1) at each
+# SOA and frame tilt condition
+
+x_plotlims2 <- -30:30
+
+raw_fits <- data_clean %>% 
+  group_by(sid, frame_orient, probe_del_ms) %>%
+  nest() %>% 
+  mutate(psy_fit = map(data, ~optim(par = c(1, 1), 
+                                    psy_fun, 
+                                    x_val = .$rod_tilt,
+                                    rsp = .$response)),
+         
+         # Pull out relevant parameters from full solution
+         pse = map_dbl(psy_fit, ~.$par[1]),
+         
+         slope = map_dbl(psy_fit, ~.$par[2]),
+         
+         residual = map_dbl(psy_fit, "value"),
+         
+         curve_fit = map(psy_fit, ~psy_plot(x_val = x_plotlims2,
+                                            c(.$par[1], .$par[2])))
+         
+  )
+
+```
+
+
+
+```{r PSE calc & plot}
+
+data_pse <- data_clean %>%
+  
+  # select only trials that are reversals and a reversal value greater than 6
+  filter(reversal == 1, 
+         reversal_num > 6) %>%
+  
+  # group data by...
+  group_by(sid, frame_orient, probe_del_ms) %>% 
+  
+  # ... and find average rod tilt within each group
+  summarise(pse = mean(rod_tilt))
+
+```
+
+
+```{r psy_fun}
+# Calculate RFI for each participant at each SOA. Then fit sigmoid to RFEs
+
+x_plotlims <- -400:400  # x-vals for plotting curve fit
+
+SOAs <- sort(unique(data_pse$probe_del_ms))
+
+data_rfe <- data_pse %>% 
+  spread(frame_orient, pse) %>%       # frame orient to 2 columns
+  mutate(rfe = Right - Left) %>%      # determine RFI magnitude  
+  select(sid, probe_del_ms, rfe) %>%  # select columns
+  nest() %>% # nest SOA and rfe for each participant into list column called "data"
+  
+  # Optimize psy_fun using nested data for each participant
+  mutate(psy_fit = map(data, ~optim(par = c(-100, 50, 6),   # set initial parameters to fit
+                                    psy_fun,                # function to minimize
+                                    x_val = .$probe_del_ms, # SOA value
+                                    rsp = .$rfe)),          # participant response
+         
+         # Pull out relevant parameters from psy_fit for easy access
+         # par[1], [2], [3], and "value" are outputs from optim()
+         pse = map_dbl(psy_fit, ~.$par[1]),
+         
+         slope = map_dbl(psy_fit, ~.$par[2]),
+         
+         height = map_dbl(psy_fit, ~.$par[3]),
+         
+         residual = map_dbl(psy_fit, "value"),
+         
+         # psy_plot returns x & y values of individual fitted functions
+         curve_fit = map(psy_fit, ~psy_plot(x_val = x_plotlims,
+                                            c(.$par[1], .$par[2], .$par[3]))),
+         
+         # predicted response at stimulus level
+         predicted_y = map(psy_fit, ~psy_plot(x_val = SOAs,
+                                              c(.$par[1], .$par[2], .$par[3]))),
+         
+         # Where function crosses 10% threshold... just 'cause
+         thresh10 = find_thresh(0.1, c(pse, slope, height))
+         
+  )
+
+```
+
+```{r prediction error}
+# Join observed and predicted errors into one data set
+data_error <- data_rfe %>% 
+  select(sid, data, predicted_y) %>% 
+  unnest() %>% 
+  rename(predicted = y_val,
+         observed = rfe) %>% 
+  mutate(pred_error = predicted - observed)
+
+
+
+# define function to grab p value from cor.test
+r_sq <- function(observed, predicted){
+  cor.obj <- cor.test(x = observed, y = predicted)
+  p_val <- cor.obj$p.val
+  return(p_val)
+}
+
+# get r^2 and p value for each fit
+data_rsq <- data_error %>% 
+  group_by(sid) %>% 
+  summarize(p_val = r_sq(observed, predicted),
+            rsq = cor(observed, predicted)^2)
+
+# which subjects had a fit with a p value greater than 0.1?
+sid_rm <- unique(data_rsq$sid[which(data_rsq$p_val > 0.1)])
+
+if(length(sid_rm) == 0){sid_rm <- "None"}
+
+print(paste("Subjects Removed:", sid_rm))
+
+```
+
+
+```{r fitted group RFE data}
+# Below follows same logic as above chunk, but applied to average RFE at each SOA instead of individual RFEs.
+
+RFE_group_fit <- data_rfe %>% 
+  select(sid, data) %>% 
+  unnest() %>% 
+  group_by(probe_del_ms) %>% 
+  summarize(mean_rfe = mean(rfe)) %>%
+  nest() %>% 
+  
+  mutate(psy_fit = map(data, ~optim(par = c(-100, 50, 6), 
+                                    psy_fun, 
+                                    x_val = .$probe_del_ms,
+                                    rsp = .$mean_rfe)),
+         
+         # Pull out relevant parameters from full solution
+         pse = map_dbl(psy_fit, ~.$par[1]),
+         
+         slope = map_dbl(psy_fit, ~.$par[2]),
+         
+         height = map_dbl(psy_fit, ~.$par[3]),
+         
+         residual = map_dbl(psy_fit, "value"),
+         
+         curve_fit = map(psy_fit, ~psy_plot(x_val = x_plotlims,
+                                            c(.$par[1], .$par[2], .$par[3]))),
+         
+         # Find where function crosses 10% threshold   
+         thresh10 = find_thresh(0.1, c(pse, slope, height))
+         
+  )
+
+
+```
+
+
+
+Plots
+
+```{r graphics tuner}
+
+# Easy way to figure themes 
+
+line_size = 2.3
+leftFrame_col = "royalblue"
+rightFrame_col = "firebrick2"
+upFrame_col = "grey24"
+text_size = 22 
+colour <- c("royalblue", "firebrick2")
+
+```
+
+```{r PSE plot}
+
+plot_LR_frames <- data_pse %>%
+  
+  # group data by...
+  group_by(frame_orient, probe_del_ms) %>%
+  
+  # ... get mean and standard error of each group
+  summarize(mean_pse = mean(pse),
+            se_pse = sd(pse) / sqrt(length(sids))) %>% 
+  
+  # pipe above data into ggplot
+  ggplot(aes(x = probe_del_ms, y = mean_pse, color = frame_orient)) +
+  geom_vline(xintercept = 0, col = "grey29", linetype = 3, size = line_size) +
+  geom_line(size = line_size) +
+  geom_errorbar(aes(ymin = mean_pse - se_pse, ymax = mean_pse + se_pse),
+                width = 1.4, size = 1.4, 
+                position = "dodge") + 
+  
+  geom_point(shape = 21, size = 6, fill = "white") +
+  
+  #scale_y_continuous(breaks = seq(-4, 3, by = 1)) +
+  ylab(expression(paste("PSE (",degree,")"))) +
+  #xlab("\n Probe Lead                                      Probe Lag \n SOA (msec)") +
+  
+  theme_bw() +
+  
+  theme(axis.title = element_text(size = text_size))  +
+  theme(axis.title.x = element_blank()) +
+  theme(axis.text = element_text(size = text_size)) +
+  theme(legend.position = "none") +
+  scale_colour_manual(values=colour) 
+
+plot_LR_frames
+
+
+# Copy below into console for saving image
+
+# jpeg("lr_frames.jpg", quality = 100,
+#      width = 9.2, height = 6.4, units = 'in', res = 300)
+# plot_LR_frames # Make plot
+# dev.off()
+
+```
+
+
+
+```{r RFE plot}
+
+# Get data points for mean RFE at each SOA and the SE
+grp_pts <- data_rfe %>% 
+  select(sid, data) %>% 
+  unnest() %>% 
+  group_by(probe_del_ms) %>% 
+  summarize(mean_rfe = mean(rfe),
+            se_rfe = sd(rfe) / sqrt(length(sids))
+  )
+
+# Get data for smooth line
+grp_fit <- RFE_group_fit %>% 
+  select(curve_fit) %>% 
+  unnest()
+
+
+plot_TC_fitted <- ggplot(data = grp_pts, aes(x = probe_del_ms, y = mean_rfe)) +
+  geom_vline(xintercept = 0, col = "grey29", linetype = 3, size = line_size) +
+  geom_errorbar(aes(ymin = mean_rfe - se_rfe, ymax = mean_rfe + se_rfe),
+                width = 1.4, size = 1.2, 
+                position = "dodge") +
+  geom_line(data = grp_fit, aes(x = x_val, y = y_val), 
+            col = rightFrame_col,
+            size = line_size) +
+  
+  geom_point(shape = 21, size = 6, fill = "white") +
+  
+  # scale_y_continuous(breaks = seq(-4, 3, by = 1)) +
+  ylab(expression(paste("RFI Magnitude (",degree,")"))) +
+  # xlab("\n Probe Lead                                      Probe Lag \n SOA (msec)") +
+  
+  theme_bw() +
+  
+  theme(axis.title = element_text(size = text_size))  +
+  theme(axis.title.x = element_blank()) +
+  theme(axis.text = element_text(size = text_size)) +
+  #theme(legend.position = "none") +
+  scale_colour_manual(values=colour) +
+  xlim(-300, 300)
+
+plot_TC_fitted
+
+
+# Copy into console for saving image
+# jpeg("rfi_tc.jpg", quality = 100,
+#      width = 9.2, height = 6.4, units = 'in', res = 300)
+# plot_TC_fitted # Make plot
+# dev.off()
+
+
+
+```
+
+
+
+```{r individual TC overlay}
+
+data_rfe %>% 
+  select(sid, data) %>% 
+  unnest() %>% 
+  
+  ggplot(aes(x = probe_del_ms, y = rfe, color = sid)) +          
+  geom_vline(xintercept = 0,         
+             col = "grey29", linetype = 3, size = line_size) +  
+  
+  geom_line(size = 1) +                     
+  geom_point(shape = 21, size = 4, fill = "white") + 
+  theme_bw() +                                       
+  
+  
+  ylab(expression(paste("RFE (",degree,")"))) +                     
+  xlab("Probe - Frame SOA")
+
+
+
+```
+
+
+```{r individual plot loop, echo=FALSE, fig.height=5, fig.width = 5, fig.show='hold', fig.align='center'}
+
+# Create plots for each participant
+# 1) staircases, 2) fits to raw data, 3) RFE time course plot
+
+
+
+for(i in 1:length(sids)){
+
+  
+  sbj_plt_name <- sids[i]
+  if(sids[i] %in% sid_rm == TRUE){
+    sbj_plt_name <- paste("REMOVED", sids[i]) # note whether subject was bad
+  }
+  
+  # Staircase plot
+  plt1 <- data_clean %>%
+    filter(sid == sids[i]) %>%
+    
+    ggplot(aes(x = trial_iteration_val, y = rod_tilt)) +
+    geom_line(aes(color = stair_approach), size = 1.3) +
+    facet_grid(probe_del_ms ~ frame_orient) +
+    ggtitle(sids[i])
+  
+  # data points for raw data fit
+  indv_pts <- raw_fits %>%
+    filter(sid == sids[i]) %>% 
+    select(frame_orient, probe_del_ms, data) %>% 
+    unnest() %>%
+    select(frame_orient, probe_del_ms, rod_tilt, response) %>% 
+    group_by(frame_orient, probe_del_ms, rod_tilt) %>% 
+    summarize(m_resp = mean(response),
+              n = n())
+  
+  # plot fit to raw data
+  plt2 <- raw_fits %>% 
+    filter(sid == sids[i]) %>% 
+    select(frame_orient, probe_del_ms, curve_fit) %>% 
+    unnest() %>% 
+    
+    ggplot(aes(x = x_val, y = y_val)) + 
+    geom_line() +
+    geom_point(data = indv_pts, aes(x = rod_tilt, y = m_resp, size = n),
+               color = rightFrame_col, alpha = .6) +
+    facet_grid(probe_del_ms ~ frame_orient) +
+    
+    xlab("Rod Tilt") +
+    ylab("Proportion Respond Rightward") +
+    
+    ggtitle(sbj_plt_name)
+  
+  # data points for time course plot
+  indv_pts2 <- data_rfe %>%
+    filter(sid == sids[i]) %>% 
+    select(data) %>% 
+    unnest() 
+  
+  # plot RFI time course
+  plt3 <- data_rfe %>% 
+    filter(sid == sids[i]) %>% 
+    select(curve_fit) %>% 
+    unnest() %>% 
+    
+    ggplot(aes(x = x_val, y = y_val)) +
+    geom_vline(xintercept = 0, linetype = "dashed", size = 1) +
+    geom_line(color = "firebrick2", size = line_size) +
+    geom_point(data = indv_pts2, 
+               aes(x = probe_del_ms, y = rfe),
+               size = 3, fill = "white") +
+    xlab("Probe - Frame SOA") +
+    ylab(expression(paste("RFI Magnitude (",degree,")"))) +
+    
+    theme_bw() +
+    
+    ggtitle(paste0(sbj_plt_name, ": RFI timecourse"))
+  
+  
+  # Error plot
+  indv_rsq <- data_rsq %>% 
+    filter(sid == sids[i]) 
+  
+  indv_error <- data_error %>% 
+    filter(sid == sids[i]) %>% 
+    
+    ggplot(aes(x = observed, y = predicted)) +
+    geom_abline(slope = 1, intercept = 0, size = 1, color = "firebrick2") +
+    geom_point(size = 2) +
+    geom_smooth(method='lm',formula=y~x) +
+    # theme(axis.text = element_blank()) +
+    ggtitle(paste0(sbj_plt_name, ": Prediction Error")) +
+    # labs(subtitle = "Red line is unity") +
+    
+    geom_text(data = indv_rsq,
+              mapping = aes(x = -Inf, y = Inf, label = paste("p =", round(p_val, 3))),
+              hjust   = -.5,
+              vjust   = 1.3) +
+    geom_text(data = indv_rsq,
+              mapping = aes(x = -Inf, y = Inf, label = paste("r^2 =", round(rsq, 3))),
+              hjust   = -.4,
+              vjust   = 2.6)
+  
+  
+  print(plt1)
+  print(plt2)
+  print(plt3)
+  print(indv_error)  
+  
+}
+
+```
+
+
+With the given data, the PSE can be estimated in two ways:
+1) By determining the average rod tilt of the last six reversals
+2) By fitting psychometric functions to the raw responses
+
+Let's compare
+
+```{r pse compare}
+
+pse_compare <- raw_fits %>% 
+  select(sid, frame_orient, probe_del_ms, pse) %>% 
+  rename(pse_raw = pse) %>% 
+  
+  right_join(data_pse, by = c("sid", "frame_orient", "probe_del_ms")) %>% 
+  mutate(pse_diff = pse - pse_raw)
+
+
+
+pse_compare2 <- pse_compare %>% 
+  group_by(frame_orient, probe_del_ms) %>% 
+  summarize(mean_pse = mean(pse),
+            mean_pse_raw = mean(pse_raw),
+            mean_pse_diff = mean(pse_diff))
+
+mean(pse_compare$pse_diff)
+sd(pse_compare$pse_diff)
+
+plot(pse_compare$pse_diff)
+
+```
+
